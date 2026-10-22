@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production build
+dist/
+dist-ssr/
+
+# Python Virtual Environment
+.venv/
+venv/
+__pycache__/
+
+# Logs & temporary files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+output.txt
+
+# Editor & IDE
+.vscode/
+.idea/
+
+# Deployment
+.vercel/
+
+# Environment files
+.env*.local
