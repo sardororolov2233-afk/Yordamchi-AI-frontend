@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Gift, Copy, Check, Share2, Sparkles, BookOpen, Presentation, Palette, FileText, ShieldAlert } from 'lucide-react';
 import { CommerceAccount } from '../api/client';
+import { standardAllowance } from '../utils/commerce';
 
 interface ReferralModalProps {
     isOpen: boolean;
@@ -20,6 +21,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
     if (!isOpen) return null;
 
     const referralLink = account?.referral_link || '';
+    const sharedAllowance = standardAllowance(account, 'article');
 
     const handleCopy = () => {
         if (!referralLink) return;
@@ -86,7 +88,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                             <div>
                                 <span className="text-[10px] font-medium opacity-65 block">Mavjud kvota</span>
                                 <span className="text-base font-black text-cyan-400">
-                                    {account?.referral_credits ?? 0} ta
+                                    {account ? `${account.referral_credits} ta` : '—'}
                                 </span>
                             </div>
                         </div>
@@ -100,7 +102,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                             <div>
                                 <span className="text-[10px] font-medium opacity-65 block">Do‘stlar soni</span>
                                 <span className="text-base font-black text-blue-400">
-                                    {account?.confirmed_referrals ?? 0} ta
+                                    {account ? `${account.confirmed_referrals} ta` : '—'}
                                 </span>
                             </div>
                         </div>
@@ -197,10 +199,14 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                             }`}>
                                 <div className="flex items-center gap-2">
                                     <FileText size={15} className="text-emerald-400" />
-                                    <span>Ilmiy Maqola, Obyektivka, Referat</span>
+                                    <span>Maqola, obyektivka, referat</span>
                                 </div>
-                                <span className="font-extrabold text-emerald-400">BEPUL</span>
+                                <span className="font-extrabold text-emerald-400 whitespace-nowrap">{sharedAllowance.label}</span>
                             </div>
+                        </div>
+                        <div className={`p-3 rounded-xl border text-[11px] leading-relaxed ${isDark ? 'border-emerald-500/25 bg-emerald-950/20 text-slate-300' : 'border-emerald-200 bg-emerald-50 text-slate-600'}`} role="status">
+                            <p className="font-bold">{sharedAllowance.ready ? `Umumiy bepul foydalanish: ${sharedAllowance.freeRemaining}/3 ta qoldi` : 'Bepul limit tekshirilmoqda'}</p>
+                            <p className="mt-1">Uchala xizmatga jami 3 ta bepul foydalanish beriladi. Keyin har bir buyurtma 1 kvota oladi. Xato bilan tugagan buyurtmaning band qilingan limiti yoki kvotasi qaytariladi.</p>
                         </div>
                     </div>
 

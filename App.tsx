@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Home, Star, Palette, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { useTelegramAuth } from './src/hooks/useTelegramAuth';
-import { getAccountCommerce, CommerceAccount, generatePresentation } from './src/api/client';
+import { getAccountCommerce, CommerceAccount, generatePresentation, generateUUID } from './src/api/client';
 import { Language } from './src/constants/templates';
 import { translations } from './src/constants/translations';
 import { showAlert } from './src/utils/telegram';
@@ -13,6 +13,7 @@ import { StandardMenu } from './src/components/StandardMenu';
 import { ArticleForm } from './src/components/ArticleForm';
 import { ObyektivkaForm } from './src/components/ObyektivkaForm';
 import { ReferralModal } from './src/components/ReferralModal';
+import { standardAllowance } from './src/utils/commerce';
 import { JobProgressCard } from './src/components/JobProgressCard';
 
 const App: React.FC = () => {
@@ -45,6 +46,7 @@ const App: React.FC = () => {
 
   // Commerce & Referral State
   const [commerce, setCommerce] = useState<CommerceAccount | null>(null);
+  const [commerceError, setCommerceError] = useState(false);
   const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
 
   // Active Job State (Durable Order)
@@ -53,17 +55,29 @@ const App: React.FC = () => {
 
   const referralCredits = commerce?.referral_credits ?? 0;
   const balance = user?.balance ?? 0;
+  const standardService = selectedStandardService === 'maqola' ? 'article' : selectedStandardService === 'obyektivka' ? 'obyektivka' : selectedStandardService === 'tezis' ? 'referat' : null;
+  const selectedAllowance = standardService ? standardAllowance(commerce, standardService) : null;
+  const presentationRequest = useRef<{fingerprint: string; id: string} | null>(null);
+  const presentationPending = useRef(false);
   const t = translations[language];
 
   // Refresh commerce quota
-  const refreshCommerce = async () => {
+  const refreshCommerce = useCallback(async () => {
+    setCommerceError(false);
     try {
       const data = await getAccountCommerce();
       setCommerce(data);
     } catch (e) {
-      console.warn('[Commerce fetch error]', e);
+      setCommerce(null);
+      setCommerceError(true);
+      console.warn('Hisobni yangilab bo‘lmadi.');
     }
-  };
+  }, []);
+
+  const finishJob = useCallback(async () => {
+    presentationRequest.current = null;
+    await refreshCommerce();
+  }, [refreshCommerce]);
 
   // On user loaded: fetch commerce & check for pending jobs
   useEffect(() => {
@@ -74,7 +88,8 @@ const App: React.FC = () => {
       refreshCommerce();
 
       // Restore unfinished job from localStorage
-      const savedJob = localStorage.getItem('orzu:job:' + user.id);
+      const requestedJob = queryParams.get('job');
+      const savedJob = requestedJob && /^[0-9a-f-]{36}$/i.test(requestedJob) ? requestedJob : localStorage.getItem('orzu:job:' + user.id);
       if (savedJob) {
         setActiveJobId(savedJob);
       }
@@ -105,21 +120,28 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = async () => {
+    if (presentationPending.current) return;
     if (!topic.trim()) {
       showAlert('Mavzuni kiriting');
       return;
     }
 
-    const hasQuota = referralCredits >= 1 || user?.role === 'admin';
+    const hasQuota = commerce?.quotes.presentation.allowed === true;
     if (!hasQuota) {
       setIsReferralModalOpen(true);
       showAlert("Taqdimot yaratish uchun 1 kvota kerak. Do'stingizni taklif qilib, bepul kvota oling!");
       return;
     }
 
+    const fingerprint = JSON.stringify({topic:topic.trim(), author:author.trim(), presentationLanguage,
+      selectedProTemplate, selectedProTemplateVariant, proDocumentFormat, proBibliographyType,
+      proBibliographyText, imageMode, files:imageFiles.map(f=>[f.name,f.size,f.lastModified])});
+    if (presentationRequest.current?.fingerprint !== fingerprint) presentationRequest.current={fingerprint,id:generateUUID()};
+    presentationPending.current=true;
     setGenerating(true);
     try {
       const result = await generatePresentation({
+        idempotencyKey: presentationRequest.current!.id,
         topic: topic.trim(),
         author: author.trim(),
         language: (presentationLanguage as 'uz' | 'ru' | 'en') || 'uz',
@@ -143,6 +165,8 @@ const App: React.FC = () => {
       const msg = e instanceof Error ? e.message : String(e);
       showAlert(`Xatolik: ${msg}`);
     } finally {
+      presentationPending.current=false;
+      refreshCommerce();
       setGenerating(false);
     }
   };
@@ -191,15 +215,23 @@ const App: React.FC = () => {
             onOpenReferral={() => setIsReferralModalOpen(true)}
           />
 
+          {commerceError && (
+            <div role="alert" className="mx-5 my-2 rounded-xl border border-amber-500/30 p-3 text-xs text-amber-500">
+              Hisobni yuklab bo‘lmadi. Limit tekshirilguncha yaratish vaqtincha yopiq.
+              <button type="button" onClick={refreshCommerce} className="ml-2 font-bold underline">Hisobni qayta yuklash</button>
+            </div>
+          )}
+
           {/* Active Job Tracker Banner */}
           {activeJobId && (
             <div className="px-5 pt-1 pb-2">
               <div className="relative">
                 <JobProgressCard
+                  key={activeJobId}
                   jobId={activeJobId}
                   serviceName={activeServiceName}
                   isDark={isDark}
-                  onFinished={refreshCommerce}
+                  onFinished={finishJob}
                 />
                 <button
                   type="button"
@@ -221,11 +253,20 @@ const App: React.FC = () => {
             <>
               {!selectedStandardService ? (
                 <StandardMenu 
+                  account={commerce}
                   isDark={isDark} 
                   onSelectService={(id) => {
                     if (id === 'taqdimot') {
                       setCurrentPage('pro');
                       setSelectedStandardService(null);
+                    } else if (id === 'kurs_ishi' || id === 'tezis') {
+                      showAlert(id === 'kurs_ishi' ? 'Kurs ishini bot chatidagi “Kurs ishi” tugmasi orqali boshlang.' : 'Referatni bot chatidagi “Referat yaratish” tugmasi orqali boshlang.');
+                      const bot = commerce?.bot_username;
+                      if (bot) {
+                        const url = `https://t.me/${bot.replace(/^@/, '')}`;
+                        const tg = (window as any).Telegram?.WebApp;
+                        if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank', 'noopener,noreferrer');
+                      }
                     } else {
                       setSelectedStandardService(id);
                     }
@@ -245,15 +286,16 @@ const App: React.FC = () => {
                       {selectedStandardService === 'maqola' ? 'Maqola Yaratish' : selectedStandardService === 'obyektivka' ? 'Obyektivka Yaratish' : 'Xizmat'}
                     </h3>
                     <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                      BEPUL
+                      {selectedAllowance?.label || 'Hisob yuklanmoqda'}
                     </span>
                   </div>
                   
                   {selectedStandardService === 'maqola' ? (
                     <ArticleForm 
+                      account={commerce}
+                      onAccountRefresh={refreshCommerce}
+                      onOpenReferral={() => setIsReferralModalOpen(true)}
                       isDark={isDark} 
-                      balance={balance} 
-                      isAdmin={user?.role === 'admin'} 
                       onJobStarted={(jobId) => {
                         setActiveJobId(jobId);
                         setActiveServiceName('Ilmiy Maqola');
@@ -262,7 +304,7 @@ const App: React.FC = () => {
                       }}
                     />
                   ) : selectedStandardService === 'obyektivka' ? (
-                    <ObyektivkaForm isDark={isDark} balance={balance} isAdmin={user?.role === 'admin'} />
+                    <ObyektivkaForm isDark={isDark} account={commerce} onAccountRefresh={refreshCommerce} onOpenReferral={() => setIsReferralModalOpen(true)} />
                   ) : (
                     <div className="flex-1 flex flex-col items-center justify-center p-8 text-center" style={{ animation: 'dFadeIn 0.3s ease-out' }}>
                       <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-cyan-500/20 to-blue-500/20 flex items-center justify-center mb-4">
@@ -620,10 +662,11 @@ const App: React.FC = () => {
           {/* ── DESIGN TAB ── */}
           {currentPage === 'design' && (
             <DesignForm
+              account={commerce}
+              onAccountRefresh={refreshCommerce}
               isDark={isDark}
               balance={balance}
               referralCredits={referralCredits}
-              isAdmin={user?.role === 'admin'}
               onOpenReferral={() => setIsReferralModalOpen(true)}
             />
           )}

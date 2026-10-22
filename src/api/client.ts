@@ -1,10 +1,10 @@
 // src/api/client.ts
 export const BASE = (import.meta as any).env?.VITE_API_BASE ||
-    (window.location.origin.includes('localhost') ? 'http://127.0.0.1:8000/api/v1' : 'https://telegram-ai-presentation.onrender.com/api/v1');
+    (['localhost', '127.0.0.1'].includes(window.location.hostname) ? '/api/v1' : 'https://sardorbekuralov.alwaysdata.net/api/v1');
 
 export function getBackendOrigin(): string {
     try {
-        return new URL(BASE).origin;
+        return new URL(BASE, window.location.origin).origin;
     } catch {
         return window.location.origin;
     }
@@ -61,12 +61,12 @@ async function request<T>(
     if (res.status === 401) {
         localStorage.removeItem('access_token');
         localStorage.removeItem('user');
-        window.location.reload();
+        throw new Error('Sessiya tugagan. Ilovani Telegram orqali qayta oching.');
     }
 
     if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail || 'Xatolik yuz berdi');
+        throw new Error(typeof err.detail === 'string' ? err.detail : 'So‘rov ma’lumotlarini tekshirib, qayta urinib ko‘ring.');
     }
 
     return res.json();
@@ -158,6 +158,10 @@ export interface CommerceQuote {
 }
 
 export interface CommerceAccount {
+    standard_trial_enabled: boolean;
+    standard_free_remaining: number;
+    standard_free_used: number;
+    standard_free_limit: number;
     access_mode: string;
     referral_credits: number;
     confirmed_referrals: number;
@@ -183,7 +187,7 @@ export async function getAccountCommerce(): Promise<CommerceAccount> {
 // ── Jobs API (Asynchronous Durable Orders) ───────────────────
 export interface JobStatus {
     id: string;
-    status: 'queued' | 'running' | 'completed' | 'failed';
+    status: 'queued' | 'processing' | 'running' | 'completed' | 'failed';
     service: string;
     telegram_sent: boolean;
     slide_count?: number;
@@ -210,7 +214,9 @@ export async function downloadJob(jobId: string, defaultFilename?: string): Prom
     a.href = url;
     const disp = res.headers.get('Content-Disposition') || '';
     const match = disp.match(/filename="?([^";]+)"?/);
-    a.download = match?.[1] || defaultFilename || `hujjat_${jobId}.pptx`;
+    const contentType = res.headers.get('Content-Type') || '';
+    const extension = contentType.includes('wordprocessingml') ? 'docx' : contentType.includes('pdf') ? 'pdf' : 'pptx';
+    a.download = match?.[1] || defaultFilename || `hujjat_${jobId}.${extension}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -396,6 +402,7 @@ export interface WorkItem {
 }
 
 export interface ObyektivkaRequest {
+    requestId?: string;
     fullName: string;
     currentPosition: string;
     birthDate: string;
@@ -428,11 +435,11 @@ export interface ObyektivkaResponse {
     message?: string;
 }
 
-export async function generateObyektivka(data: ObyektivkaRequest): Promise<ObyektivkaResponse> {
+export async function generateObyektivka(data: ObyektivkaRequest, idempotencyKey?: string): Promise<ObyektivkaResponse> {
     const token = getToken();
     const headers: Record<string, string> = {
         'Bypass-Tunnel-Reminder': 'true',
-        'Idempotency-Key': generateUUID(),
+        'Idempotency-Key': idempotencyKey || data.requestId || generateUUID(),
     };
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
@@ -498,7 +505,7 @@ export async function generateObyektivka(data: ObyektivkaRequest): Promise<Obyek
     if (res.status === 401) {
         localStorage.removeItem('access_token');
         localStorage.removeItem('user');
-        window.location.reload();
+        throw new Error('Sessiya tugagan. Ilovani Telegram orqali qayta oching.');
     }
 
     if (!res.ok) {

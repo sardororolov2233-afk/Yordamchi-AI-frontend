@@ -1,0 +1,36 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import App from '../../App';
+import { getAccountCommerce, generateArticle } from '../api/client';
+import { account } from '../test/account';
+vi.mock('../hooks/useTelegramAuth',()=>({useTelegramAuth:()=>({user:{id:99,first_name:'Test',role:'admin',balance:100000},loading:false,error:null})}));
+vi.mock('../api/client',async importOriginal=>({...await importOriginal<typeof import('../api/client')>(),getAccountCommerce:vi.fn(),generateArticle:vi.fn()}));
+vi.mock('../utils/telegram',()=>({showAlert:vi.fn()}));
+vi.mock('./JobProgressCard',()=>({JobProgressCard:()=> <div>Buyurtma holati</div>}));
+vi.mock('jspdf',()=>({jsPDF:vi.fn()}));
+beforeEach(()=>{vi.resetAllMocks();localStorage.clear();window.history.replaceState({},'', '/?tab=standard');});
+afterEach(cleanup);
+it('keeps articles in Standard and refreshes the final shared free slot after enqueue',async()=>{
+ vi.mocked(getAccountCommerce).mockResolvedValueOnce(account(1)).mockResolvedValue(account(0,0));
+ vi.mocked(generateArticle).mockResolvedValue({id:'job-1',status:'queued',telegram_sent:false});
+ render(<App/>);
+ await waitFor(()=>expect(screen.getAllByText(/1\/3/).length).toBeGreaterThan(0));
+ fireEvent.click(screen.getByText('Maqola'));
+ fireEvent.change(screen.getByPlaceholderText(/Masalan: Raqamli/),{target:{value:'Savod orgatish'}});
+ fireEvent.change(screen.getByPlaceholderText('F.I.SH kiriting...'),{target:{value:'Test Author'}});
+ fireEvent.click(screen.getByRole('button',{name:/ILMIY MAQOLA YARATISH/}));
+ await waitFor(()=>expect(generateArticle).toHaveBeenCalledTimes(1));
+ await waitFor(()=>expect(screen.getAllByText(/Qoldi: 0\/3/).length).toBeGreaterThan(0));
+ const submit=screen.getByRole('button',{name:/ILMIY MAQOLA YARATISH/}) as HTMLButtonElement;
+ expect(submit.disabled).toBe(true);
+ expect(screen.getByText('Maqola Yaratish')).toBeTruthy();
+ expect(screen.queryByText('BEPUL')).toBeNull();
+});
+it('restores existing article deep links in the same Standard form without a backend miniapp',async()=>{
+ window.history.replaceState({},'', '/?tab=articles');
+ vi.mocked(getAccountCommerce).mockResolvedValue(account(0,1));
+ render(<App/>);
+ await waitFor(()=>expect(screen.getByText('Maqola Yaratish')).toBeTruthy());
+ await waitFor(()=>expect(screen.getAllByText('1 kvota').length).toBeGreaterThan(0));
+ expect(screen.getByPlaceholderText('F.I.SH kiriting...')).toBeTruthy();
+});

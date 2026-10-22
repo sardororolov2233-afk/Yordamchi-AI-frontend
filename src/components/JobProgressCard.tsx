@@ -21,18 +21,19 @@ export const JobProgressCard: React.FC<JobProgressCardProps> = ({
 
     useEffect(() => {
         let isCancelled = false;
-        let pollCount = 0;
+        setStatusData(null);
+        setStep(1);
+        let polling = false;
 
         const interval = setInterval(async () => {
-            pollCount++;
-            if (pollCount % 2 === 0) {
-                setStep(s => (s < 3 ? s + 1 : 1));
-            }
+            if (polling) return;
+            polling = true;
 
             try {
                 const data = await getJobStatus(jobId);
                 if (isCancelled) return;
                 setStatusData(data);
+                setStep(data.status === 'queued' ? 1 : data.status === 'completed' ? 3 : 2);
 
                 if (data.status === 'completed' || data.status === 'failed') {
                     clearInterval(interval);
@@ -40,6 +41,8 @@ export const JobProgressCard: React.FC<JobProgressCardProps> = ({
                 }
             } catch (err) {
                 console.error('[JobPoll error]', err);
+            } finally {
+                polling = false;
             }
         }, 1500);
 
@@ -97,7 +100,7 @@ export const JobProgressCard: React.FC<JobProgressCardProps> = ({
                                 ? 'Muvaffaqiyatli yakunlandi!' 
                                 : isFailed 
                                 ? 'Bajarilmadi' 
-                                : 'Claude Haiku va Seedream ishlamoqda...'}
+                                : statusData?.status === 'queued' ? 'Buyurtma navbatda...' : 'Buyurtma tayyorlanmoqda...'}
                         </p>
                     </div>
                 </div>
@@ -120,9 +123,9 @@ export const JobProgressCard: React.FC<JobProgressCardProps> = ({
                         <div className="h-full bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full animate-pulse transition-all duration-500 w-3/4" />
                     </div>
                     <div className="flex justify-between text-[9.5px] opacity-70 font-medium px-1">
-                        <span className={step >= 1 ? 'text-cyan-400 font-bold' : ''}>1. Matn & Reja (Haiku)</span>
-                        <span className={step >= 2 ? 'text-cyan-400 font-bold' : ''}>2. Rasmlar (Seedream)</span>
-                        <span className={step >= 3 ? 'text-cyan-400 font-bold' : ''}>3. Formatlash</span>
+                        <span className={step >= 1 ? 'text-cyan-400 font-bold' : ''}>1. So‘rov qabul qilindi</span>
+                        <span className={step >= 2 ? 'text-cyan-400 font-bold' : ''}>2. Tayyorlanmoqda</span>
+                        <span className={step >= 3 ? 'text-cyan-400 font-bold' : ''}>3. Yakunlash</span>
                     </div>
                 </div>
             )}
@@ -132,7 +135,7 @@ export const JobProgressCard: React.FC<JobProgressCardProps> = ({
                 <div className="space-y-3 pt-1">
                     <div className="flex items-center gap-2 text-xs text-emerald-400 font-medium">
                         <Send size={14} />
-                        <span>Fayl Telegram botingizga ham yuborildi!</span>
+                        <span>{statusData?.telegram_sent ? 'Fayl Telegram botingizga ham yuborildi!' : 'Fayl tayyor. Quyidagi tugma orqali yuklab oling.'}</span>
                     </div>
 
                     <button

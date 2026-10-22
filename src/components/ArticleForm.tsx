@@ -1,25 +1,38 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ChevronDown, FileText } from 'lucide-react';
 import { Language } from '../constants/templates';
 import { showAlert } from '../utils/telegram';
-import { generateArticle } from '../api/client';
+import { CommerceAccount, getJobStatus, generateArticle, generateUUID } from '../api/client';
+import { standardAllowance } from '../utils/commerce';
 
 interface ArticleFormProps {
     isDark: boolean;
+    account: CommerceAccount | null;
+    onAccountRefresh?: () => void | Promise<void>;
+    onOpenReferral?: () => void;
     balance?: number;
     isAdmin?: boolean;
     onJobStarted?: (jobId: string) => void;
 }
 
-export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, onJobStarted }) => {
+export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, account, onJobStarted, onAccountRefresh, onOpenReferral }) => {
+    const allowance = standardAllowance(account, 'article');
     const [topic, setTopic] = useState('');
     const [author, setAuthor] = useState('');
     const [language, setLanguage] = useState<Language>('uz');
     const [references, setReferences] = useState('');
     const [isLangOpen, setIsLangOpen] = useState(false);
     const [generating, setGenerating] = useState(false);
+    const submittingRef = useRef(false);
+    const requestIdsRef = useRef(new Map<string, string>());
 
     const handleGenerate = async () => {
+        if (submittingRef.current || generating) return;
+        if (!allowance.ready || !allowance.allowed) {
+            showAlert(allowance.ready ? "Maqola uchun 1 kvota kerak. Do‘st taklif qilib kvota oling." : 'Hisob va bepul limit hali tekshirilmoqda. Birozdan so‘ng qayta urinib ko‘ring.');
+            if (allowance.ready) onOpenReferral?.();
+            return;
+        }
         if (!topic.trim()) {
             showAlert('Maqola mavzusini kiriting!');
             return;
@@ -29,25 +42,49 @@ export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, onJobStarted }
             return;
         }
 
+        const submission = {
+            topic: topic.trim(),
+            author: author.trim(),
+            language: (language as 'uz' | 'ru' | 'en') || 'uz',
+            references: references.trim(),
+        };
+        const fingerprint = JSON.stringify(submission);
+        let idempotencyKey = requestIdsRef.current.get(fingerprint);
+        if (!idempotencyKey) {
+            idempotencyKey = generateUUID();
+            requestIdsRef.current.set(fingerprint, idempotencyKey);
+        }
+        submittingRef.current = true;
         setGenerating(true);
         try {
             const result = await generateArticle({
-                topic: topic.trim(),
-                author: author.trim(),
-                language: (language as 'uz' | 'ru' | 'en') || 'uz',
-                references: references.trim(),
+                ...submission,
                 send_to_telegram: true,
+                idempotencyKey,
             });
 
             if (onJobStarted) {
                 onJobStarted(result.id);
             }
 
-            showAlert("✅ Maqola generatsiyasi boshlandi! Claude Haiku ilmiy matn, GOST adabiyotlar va annotatsiyani tayyorlamoqda. Tayyor DOCX fayli Telegram botingizga ham yuboriladi.");
+            showAlert("✅ Maqola generatsiyasi boshlandi! Ilmiy matn va annotatsiya tayyorlanmoqda. Tayyor DOCX fayli Telegram botingizga ham yuboriladi.");
         } catch (e: any) {
-            showAlert(`Xatolik yuz berdi: ${e.message}`);
+            // The server may have accepted the order before the connection was lost.
+            // Recover by the same UUID instead of spending a second allowance.
+            try {
+                const existing = await getJobStatus(idempotencyKey);
+                onJobStarted?.(existing.id);
+                showAlert('Buyurtmangiz topildi. Holatini shu oynada kuzatishingiz mumkin.');
+            } catch {
+                showAlert(`Xatolik yuz berdi: ${e.message}`);
+            }
         } finally {
-            setGenerating(false);
+            try {
+                await onAccountRefresh?.();
+            } finally {
+                submittingRef.current = false;
+                setGenerating(false);
+            }
         }
     };
 
@@ -78,7 +115,7 @@ export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, onJobStarted }
                                 </span>
                             </div>
                             <p className="text-[10px] opacity-65 truncate">
-                                6-bosqichli zanjir • Footnote • Annotatsiya • GOST manbalar
+                                Ilmiy matn • Annotatsiya • Word hujjati
                             </p>
                         </div>
                     </div>
@@ -87,11 +124,16 @@ export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, onJobStarted }
                             Xizmat narxi
                         </span>
                         <span className="text-xs sm:text-sm font-black text-emerald-400">
-                            BEPUL
+                            {allowance.label}
                         </span>
                     </div>
                 </div>
 
+                <div className={`rounded-xl border p-3 text-[11px] leading-relaxed ${isDark ? 'border-cyan-500/25 bg-cyan-950/15 text-slate-300' : 'border-cyan-200 bg-cyan-50 text-slate-600'}`} role="status">
+                    <p>{allowance.note}</p>
+                    <p className="mt-1">Referat, maqola va obyektivka bitta umumiy 3 talik bepul limitdan foydalanadi. Keyingi har bir buyurtma — 1 kvota.</p>
+                    {allowance.ready && !allowance.allowed && onOpenReferral && <button type="button" onClick={onOpenReferral} className="mt-2 font-bold text-cyan-400 underline">Do‘st taklif qilib kvota olish</button>}
+                </div>
                 {/* Topic Input */}
                 <div className="space-y-1.5">
                     <label className="text-[11px] font-bold uppercase tracking-wider opacity-70 ml-1">
@@ -191,11 +233,11 @@ export const ArticleForm: React.FC<ArticleFormProps> = ({ isDark, onJobStarted }
                 <button
                     type="button"
                     onClick={handleGenerate}
-                    disabled={generating || !topic.trim() || !author.trim()}
+                    disabled={generating || !allowance.ready || !allowance.allowed || !topic.trim() || !author.trim()}
                     className="w-full px-5 py-4 rounded-2xl text-sm font-bold text-white transition-all active:scale-[0.98] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{ background: 'linear-gradient(135deg, #06b6d4, #3b82f6, #6366f1)' }}
                 >
-                    {generating ? '⏳ YARATILMOQDA...' : '✨ ILMIY MAQOLA YARATISH (BEPUL)'}
+                    {generating ? '⏳ YARATILMOQDA...' : !allowance.ready ? '⏳ LIMIT TEKSHIRILMOQDA...' : `✨ ILMIY MAQOLA YARATISH (${allowance.label})`}
                 </button>
             </div>
         </div>

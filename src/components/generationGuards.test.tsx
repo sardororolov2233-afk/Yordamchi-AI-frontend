@@ -1,0 +1,46 @@
+import { StrictMode } from 'react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { account } from '../test/account';
+import { DesignForm } from './DesignForm';
+import { ObyektivkaForm } from './ObyektivkaForm';
+import { JobProgressCard } from './JobProgressCard';
+import { generateDesign, getJobStatus } from '../api/client';
+vi.mock('../api/client',async importOriginal=>({...await importOriginal<typeof import('../api/client')>(),generateDesign:vi.fn(),getJobStatus:vi.fn()}));
+vi.mock('../utils/telegram',()=>({showAlert:vi.fn()}));
+vi.mock('jspdf',()=>({jsPDF:vi.fn()}));
+beforeEach(()=>vi.resetAllMocks());
+afterEach(()=>{cleanup();vi.useRealTimers();});
+it('never grants a design admin waiver and submits only once in StrictMode after explicit confirmation',async()=>{
+ const {rerender}=render(<StrictMode><DesignForm isDark account={account(0,0)} isAdmin/></StrictMode>);
+ fireEvent.change(screen.getByPlaceholderText(/Masalan: IT akademiyamiz/),{target:{value:'Test design'}});
+ expect((screen.getByRole('button',{name:/DIZAYN YARATISH/}) as HTMLButtonElement).disabled).toBe(true);
+ expect(generateDesign).not.toHaveBeenCalled();
+ vi.mocked(generateDesign).mockResolvedValue({id:'design1',images:['data:image/png;base64,AAA='],telegram_sent:false});
+ const refresh=vi.fn().mockResolvedValue(undefined);
+ rerender(<StrictMode><DesignForm isDark account={account(0,1)} onAccountRefresh={refresh}/></StrictMode>);
+ fireEvent.click(screen.getByRole('button',{name:/DIZAYN YARATISH/}));
+ fireEvent.click(screen.getByRole('button',{name:'HA, ISHONCHIM KOMIL'}));
+ await waitFor(()=>expect(refresh).toHaveBeenCalledTimes(1));
+ expect(generateDesign).toHaveBeenCalledTimes(1);
+ expect(vi.mocked(generateDesign).mock.calls[0][0].idempotencyKey).toBeTruthy();
+});
+it('uses the same pooled allowance in the obyektivka form',()=>{
+ const {rerender}=render(<ObyektivkaForm isDark account={account(1)}/>);
+ expect(screen.getByText('Bepul limitdan')).toBeTruthy();
+ expect(screen.getByText(/Qoldi: 1\/3/)).toBeTruthy();
+ rerender(<ObyektivkaForm isDark account={account(0,0)}/>);
+ expect(screen.getByText('1 kvota')).toBeTruthy();
+ expect(screen.queryByText('BEPUL')).toBeNull();
+ rerender(<ObyektivkaForm isDark account={null}/>);
+ expect(screen.getByText('Hisob yuklanmoqda')).toBeTruthy();
+});
+it('does not claim Telegram delivery when only the downloadable file was completed',async()=>{
+ vi.useFakeTimers();
+ vi.mocked(getJobStatus).mockResolvedValue({id:'job1',status:'completed',service:'article',telegram_sent:false});
+ const finished=vi.fn();render(<JobProgressCard jobId="job1" isDark onFinished={finished}/>);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(1500);});
+ expect(screen.getByText('Fayl tayyor. Quyidagi tugma orqali yuklab oling.')).toBeTruthy();
+ expect(screen.queryByText('Fayl Telegram botingizga ham yuborildi!')).toBeNull();
+ expect(finished).toHaveBeenCalledTimes(1);
+});

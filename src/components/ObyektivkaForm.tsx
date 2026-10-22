@@ -8,12 +8,14 @@ import {
 import { showAlert } from '../utils/telegram';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
-import { generateObyektivka, RelativeItem, WorkItem } from '../api/client';
+import { generateObyektivka, generateUUID, RelativeItem, WorkItem, CommerceAccount } from '../api/client';
+import { standardAllowance } from '../utils/commerce';
 
 interface ObyektivkaFormProps {
     isDark: boolean;
-    balance?: number;
-    isAdmin?: boolean;
+    account: CommerceAccount | null;
+    onAccountRefresh?: () => void | Promise<void>;
+    onOpenReferral?: () => void;
 }
 
 const SAMPLE_DATA = {
@@ -101,8 +103,8 @@ const RELATIONSHIP_OPTIONS = [
     { id: 'Boshqa', label: 'Boshqa qarindosh' }
 ];
 
-export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance, isAdmin }) => {
-    const SERVICE_PRICE = 0;
+export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, account, onAccountRefresh, onOpenReferral }) => {
+    const allowance = standardAllowance(account, 'obyektivka');
 
     // Current Step: 'step1' (Asosiy), 'step2' (Qarindoshlar), 'preview' (Ko'rish)
     const [activeStep, setActiveStep] = useState<'step1' | 'step2' | 'preview'>('step1');
@@ -138,6 +140,20 @@ export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance,
     const [copied, setCopied] = useState(false);
     const [downloading, setDownloading] = useState(false);
     const [creatingDocx, setCreatingDocx] = useState(false);
+    const [completedFingerprint, setCompletedFingerprint] = useState<string | null>(null);
+    const submittingRef = useRef(false);
+    const requestIdsRef = useRef(new Map<string, string>());
+    const currentRequest = {
+        fullName, currentPosition, birthDate, birthPlace, livingAddress, nationality, party,
+        educationLevel, university, educationForm, specialty, academicDegree, academicTitle,
+        qualificationLevel, phone, email, languages, awards, deputy, workHistory, relatives, photoFile
+    };
+    const fingerprint = JSON.stringify({
+        ...currentRequest, photo, photoFile: photoFile ? [photoFile.name, photoFile.size, photoFile.lastModified] : null
+    });
+    const canExport = completedFingerprint === fingerprint;
+    const createDisabled = creatingDocx || !allowance.ready || !allowance.allowed || canExport;
+    const createLabel = canExport ? 'DOCX tayyorlandi' : `Obyektivkani yaratish (${allowance.label})`;
     const page1Ref = useRef<HTMLDivElement>(null);
     const page2Ref = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -242,6 +258,7 @@ export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance,
         setWorkHistory(SAMPLE_DATA.workHistory);
         setRelatives(SAMPLE_DATA.relatives);
         setPhoto('/previews/obyektivka.png');
+        setPhotoFile(null);
         showAlert('Namuna ma\'lumotlari muvaffaqiyatli yuklandi!');
     };
 
@@ -273,18 +290,31 @@ export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance,
     };
 
     const handleCreateObyektivka = async () => {
+        if (submittingRef.current || creatingDocx || canExport) return;
+        if (!allowance.ready) {
+            showAlert('Hisob ma’lumotlari yuklanmoqda. Birozdan so‘ng qayta urinib ko‘ring.');
+            return;
+        }
+        if (!allowance.allowed) {
+            showAlert('Umumiy bepul limit tugagan. Obyektivka uchun 1 kvota kerak. Do‘st taklif qilib kvota oling.');
+            onOpenReferral?.();
+            return;
+        }
         if (!fullName.trim()) {
             showAlert("Iltimos, avval F.I.SH. (ism, familiya, sharif)ni kiriting!");
             setActiveStep('step1');
             return;
         }
 
-        if (balance !== undefined && balance < SERVICE_PRICE && !isAdmin) {
-            showAlert(`Balansingizda yetarli mablag' mavjud emas. Xizmat narxi: BEPUL. Joriy balansingiz: ${balance.toLocaleString()} so'm.`);
-            return;
-        }
 
+        submittingRef.current = true;
         setCreatingDocx(true);
+        const submittedFingerprint = fingerprint;
+        let requestId = requestIdsRef.current.get(submittedFingerprint);
+        if (!requestId) {
+            requestId = generateUUID();
+            requestIdsRef.current.set(submittedFingerprint, requestId);
+        }
         try {
             const res = await generateObyektivka({
                 fullName,
@@ -309,7 +339,8 @@ export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance,
                 workHistory,
                 relatives,
                 photoFile
-            });
+            }, requestId);
+            setCompletedFingerprint(submittedFingerprint);
 
             if (res.telegram_sent) {
                 showAlert("Obyektivka tayyorlandi va tayyor DOCX fayli Telegram botingizga yuborildi.");
@@ -322,14 +353,27 @@ export const ObyektivkaForm: React.FC<ObyektivkaFormProps> = ({ isDark, balance,
                 showAlert(res.message || "Obyektivka DOCX hujjati muvaffaqiyatli tayyorlandi!");
             }
         } catch (err: any) {
-            console.error('Create obyektivka error:', err);
             showAlert(`Xatolik: ${err.message || 'Server bilan bog\'lanishda muammo yuz berdi'}`);
         } finally {
-            setCreatingDocx(false);
+            try {
+                await onAccountRefresh?.();
+            } catch {
+                // Keep the generation result; a failed refresh must not create another order.
+            } finally {
+                submittingRef.current = false;
+                setCreatingDocx(false);
+            }
         }
     };
 
+    const ensureExportReady = () => {
+        if (canExport) return true;
+        showAlert('Avval shu ma’lumotlar uchun DOCX yarating. So‘ng nusxa, PDF va chop etish qo‘shimcha kvotasiz ishlaydi.');
+        return false;
+    };
+
     const handleCopyText = () => {
+        if (!ensureExportReady()) return;
         const text = `
 МАЪЛУМОТНОМА
 ${fullName}
@@ -367,6 +411,7 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
     };
 
     const handleDownloadPdf = async () => {
+        if (!ensureExportReady() || downloading) return;
         setDownloading(true);
         try {
             const pdf = new jsPDF('p', 'mm', 'a4');
@@ -553,9 +598,17 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
                                 Xizmat narxi
                             </span>
                             <span className="text-sm sm:text-base font-black text-[#00c2cb]">
-                                BEPUL
+                                {allowance.label}
                             </span>
                         </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-3 text-xs ${isDark ? 'border-cyan-500/25 bg-cyan-500/5 text-cyan-100' : 'border-cyan-200 bg-cyan-50 text-cyan-900'}`} aria-live="polite">
+                        <p>{allowance.note}</p>
+                        <p className="mt-1 opacity-75">Referat, maqola va obyektivka bitta umumiy bepul limitdan foydalanadi.</p>
+                        {allowance.ready && !allowance.allowed && onOpenReferral && (
+                            <button type="button" onClick={onOpenReferral} className="mt-2 font-bold underline underline-offset-2">Do‘st taklif qilish</button>
+                        )}
                     </div>
 
                     {/* Section 1: Personal Information & Photo */}
@@ -607,7 +660,7 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
                                     {photo && (
                                         <button
                                             type="button"
-                                            onClick={() => setPhoto(null)}
+                                            onClick={() => { setPhoto(null); setPhotoFile(null); }}
                                             className="px-2.5 py-1.5 rounded-xl text-xs text-red-400 hover:bg-red-500/10 transition-colors"
                                             title="Rasmni o'chirish"
                                         >
@@ -1397,7 +1450,7 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
                         <button
                             type="button"
                             onClick={handleCreateObyektivka}
-                            disabled={creatingDocx}
+                            disabled={createDisabled}
                             className="flex-1 py-3.5 px-6 rounded-2xl text-sm font-bold text-white bg-gradient-to-r from-[#00c2cb] via-[#0284c7] to-[#2563eb] shadow-lg shadow-[#00c2cb]/30 hover:opacity-95 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
                         >
                             {creatingDocx ? (
@@ -1408,7 +1461,7 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
                             ) : (
                                 <>
                                     <Sparkles size={18} />
-                                    <span>Obyektivkani yaratish (BEPUL)</span>
+                                    <span>{createLabel}</span>
                                 </>
                             )}
                         </button>
@@ -1446,7 +1499,7 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
 
                             <button
                                 type="button"
-                                onClick={() => window.print()}
+                                onClick={() => { if (ensureExportReady()) window.print(); }}
                                 className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
                                     isDark ? 'bg-slate-800 border-slate-700 text-slate-200 hover:text-white' : 'bg-white border-slate-300 text-slate-700 hover:text-black'
                                 }`}
@@ -1469,14 +1522,18 @@ ${relatives.map(r => `${r.relationship}: ${r.fullName}, ${r.birthYearPlace}, ${r
                             <button
                                 type="button"
                                 onClick={handleCreateObyektivka}
-                                disabled={creatingDocx}
+                                disabled={createDisabled}
                                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#00c2cb] text-white hover:bg-[#00b0b8] transition-all shadow-md active:scale-95 disabled:opacity-60"
                             >
                                 <Sparkles size={14} />
-                                <span>{creatingDocx ? 'Yaratilmoqda...' : 'DOCX yaratish (10 000 so\'m)'}</span>
+                                <span>{creatingDocx ? 'Yaratilmoqda...' : canExport ? 'DOCX tayyorlandi' : `DOCX yaratish (${allowance.label})`}</span>
                             </button>
                         </div>
                     </div>
+
+                    <p className={`mb-4 rounded-xl border p-3 text-xs ${isDark ? 'border-cyan-500/25 text-cyan-100' : 'border-cyan-200 text-cyan-900'}`} aria-live="polite">
+                        {canExport ? 'Shu ma’lumotlar uchun hujjat tayyor. Nusxa, PDF va chop etish qo‘shimcha kvota sarflamaydi.' : `${allowance.note} Nusxa, PDF va chop etish DOCX yaratilgandan keyin ochiladi.`}
+                    </p>
 
                     {/* Official Document Sheets (A4 multi-page visual) */}
                     <div className="flex flex-col items-center gap-6 pb-8">

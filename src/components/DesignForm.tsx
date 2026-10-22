@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { generateDesign } from '../api/client';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { generateDesign, generateUUID, CommerceAccount } from '../api/client';
 import { showAlert } from '../utils/telegram';
 
 // ── Types ───────────────────────────────────────────────────
@@ -15,6 +15,8 @@ export interface DesignFormData {
 
 interface DesignFormProps {
     isDark: boolean;
+    account: CommerceAccount | null;
+    onAccountRefresh?: () => void | Promise<void>;
     balance?: number;
     referralCredits?: number;
     isAdmin?: boolean;
@@ -93,7 +95,7 @@ const TIPS = [
 // ══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
-export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits = 0, isAdmin = false, onOpenReferral }) => {
+export const DesignForm: React.FC<DesignFormProps> = ({ isDark, account, onAccountRefresh, onOpenReferral }) => {
     const [screen, setScreen] = useState<DesignScreen>('form');
     const [description, setDescription] = useState('');
     const [selectedFormat, setSelectedFormat] = useState<BannerFormat>('instagram');
@@ -116,9 +118,14 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
     // Track preview source
     const [isPreviewingSample, setIsPreviewingSample] = useState(false);
 
-    const canAfford = referralCredits >= 1 || isAdmin;
+    const quote = account?.quotes?.design;
+    const accountReady = account?.access_mode === 'referral_only' && !!quote;
+    const canAfford = accountReady && quote.allowed;
+    const [submitting, setSubmitting] = useState(false);
+    const submittingRef = useRef(false);
+    const requestIdsRef = useRef(new Map<string, string>());
 
-    // ── Design generation API call ──────────────────────────
+    // ── Loading animation only; generation starts on explicit confirmation ──
     useEffect(() => {
         if (screen !== 'loading') return;
         setProgress(0);
@@ -138,64 +145,73 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
             setTipIndex(prev => (prev + 1) % TIPS.length);
         }, 3500);
 
-        let active = true;
-        const runApi = async () => {
-            try {
-                const data = await generateDesign({
-                    description,
-                    format: selectedFormat,
-                    style: selectedStyle,
-                    lang: selectedLang,
-                    send_to_telegram: true
-                });
-                if (!active) return;
-                
-                setProgress(100);
-                clearInterval(progTimer);
-                
-                if (data.images && data.images.length > 0) {
-                    setVariants(data.images);
-                } else {
-                    throw new Error("Dizayn variantlari qaytarilmadi");
-                }
-                
-                setTimeout(() => {
-                    if (active) setScreen('gallery');
-                }, 500);
-            } catch (err: any) {
-                if (!active) return;
-                clearInterval(progTimer);
-                showAlert(err.message || "Dizayn yaratishda xatolik yuz berdi");
-                setScreen('form');
-            }
-        };
-
-        runApi();
-
         return () => {
-            active = false;
             clearInterval(progTimer);
             clearInterval(tipTimer);
         };
     }, [screen]);
 
     // ── Handlers ────────────────────────────────────────────
-    const handleGenerate = useCallback(() => {
-        if (!description.trim()) return;
-        if (!canAfford) {
-            if (onOpenReferral) {
-                onOpenReferral();
-            } else {
-                showAlert("Dizayn yaratish uchun 1 kvota kerak. Do'stingizni taklif qiling!");
-            }
-            return;
+    const ensureCanGenerate = useCallback(() => {
+        if (!accountReady) {
+            showAlert('Hisob ma’lumotlari yuklanmoqda. Birozdan so‘ng qayta urinib ko‘ring.');
+            return false;
         }
+        if (!canAfford) {
+            showAlert('Dizayn yaratish uchun 1 kvota kerak. Do‘st taklif qilib kvota oling.');
+            onOpenReferral?.();
+            return false;
+        }
+        return true;
+    }, [accountReady, canAfford, onOpenReferral]);
+
+    const handleGenerate = useCallback(() => {
+        if (!description.trim() || submittingRef.current || !ensureCanGenerate()) return;
         setShowConfirmModal(true);
-    }, [description, canAfford, onOpenReferral]);
+    }, [description, ensureCanGenerate]);
 
     const handleRegenerate = useCallback(() => {
+        if (submittingRef.current || !ensureCanGenerate()) return;
+        setShowConfirmModal(true);
+    }, [ensureCanGenerate]);
+
+    const confirmGeneration = async () => {
+        if (submittingRef.current || !description.trim() || !ensureCanGenerate()) return;
+        submittingRef.current = true;
+        setSubmitting(true);
+        setShowConfirmModal(false);
         setScreen('loading');
-    }, []);
+        const payload = {
+            description: description.trim(), format: selectedFormat, style: selectedStyle,
+            lang: selectedLang, send_to_telegram: true
+        };
+        const fingerprint = JSON.stringify(payload);
+        let idempotencyKey = requestIdsRef.current.get(fingerprint);
+        if (!idempotencyKey) {
+            idempotencyKey = generateUUID();
+            requestIdsRef.current.set(fingerprint, idempotencyKey);
+        }
+        try {
+            const data = await generateDesign({ ...payload, idempotencyKey });
+            if (!data.images?.length) throw new Error('Dizayn variantlari qaytarilmadi');
+            setVariants(data.images);
+            setProgress(100);
+            requestIdsRef.current.delete(fingerprint);
+            setScreen('gallery');
+        } catch (err: any) {
+            showAlert(err.message || 'Dizayn yaratishda xatolik yuz berdi');
+            setScreen('form');
+        } finally {
+            try {
+                await onAccountRefresh?.();
+            } catch {
+                // Refresh failure must not turn a successful order into an automatic retry.
+            } finally {
+                submittingRef.current = false;
+                setSubmitting(false);
+            }
+        }
+    };
 
     const openPreview = useCallback((url: string, isSample: boolean = false) => {
         setPreviewUrl(url);
@@ -223,6 +239,7 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
     }, []);
 
     const goBack = useCallback(() => {
+        if (submittingRef.current) return;
         if (screen === 'preview') setScreen('gallery');
         else if (screen === 'gallery') setScreen('form');
         else if (screen === 'loading') setScreen('form');
@@ -262,10 +279,8 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
                     <div className="flex flex-col gap-2">
                         <button
                             type="button"
-                            onClick={() => {
-                                setShowConfirmModal(false);
-                                setScreen('loading');
-                            }}
+                            onClick={confirmGeneration}
+                            disabled={submitting || !canAfford}
                             className="w-full py-3 rounded-2xl text-xs font-bold text-white transition-all active:scale-[0.98] shadow-md shadow-orange-500/20"
                             style={{ background: 'linear-gradient(135deg,#f59e0b,#ec4899)' }}
                         >
@@ -501,12 +516,16 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
                     </div>
                 </div>
 
+                {accountReady && !canAfford && onOpenReferral && (
+                    <button type="button" onClick={onOpenReferral} className="mx-4 mb-3 rounded-xl border border-pink-500/30 px-4 py-2.5 text-xs font-bold text-pink-400">Do‘st taklif qilib kvota oling</button>
+                )}
+
                 {/* Generate button */}
-                <button id="design-generate-btn" type="button" onClick={handleGenerate} disabled={!description.trim() || !canAfford}
+                <button id="design-generate-btn" type="button" onClick={handleGenerate} disabled={!description.trim() || !canAfford || submitting}
                     className="w-full px-5 py-4 rounded-b-3xl text-sm font-extrabold text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99] relative overflow-hidden group"
                     style={{ background: 'linear-gradient(135deg,#6366f1,#ec4899,#f59e0b)', backgroundSize: '200% 200%', animation: 'dGrad 3s ease infinite' }}>
                     <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity" style={{ background: 'linear-gradient(105deg,transparent 40%,rgba(255,255,255,.5) 50%,transparent 60%)', backgroundSize: '200% 100%', animation: 'dShimmer 2s infinite' }} />
-                    <span className="relative">✨ DIZAYN YARATISH</span>
+                    <span className="relative">{!accountReady ? 'HISOB YUKLANMOQDA...' : '✨ DIZAYN YARATISH'}</span>
                 </button>
             </>
         );
@@ -595,7 +614,7 @@ export const DesignForm: React.FC<DesignFormProps> = ({ isDark, referralCredits 
                 </div>
 
                 {/* Regenerate button */}
-                <button type="button" onClick={handleRegenerate}
+                <button type="button" onClick={handleRegenerate} disabled={submitting || !canAfford}
                     className={`mx-4 mb-4 px-5 py-3 rounded-2xl text-xs font-bold border transition-all active:scale-[0.98] flex items-center justify-center gap-2 ${isDark ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700' : 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'}`}>
                     🔄 BOSHQATDAN GENERATSIYA
                 </button>

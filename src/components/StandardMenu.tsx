@@ -1,4 +1,6 @@
 import React from 'react';
+import { CommerceAccount } from '../api/client';
+import { standardAllowance } from '../utils/commerce';
 import { FileText, BookOpen, Briefcase, GraduationCap, Image as ImageIcon, CheckSquare, Presentation, FileBadge } from 'lucide-react';
 
 export interface ServiceItem {
@@ -13,10 +15,12 @@ export interface ServiceItem {
 
 interface StandardMenuProps {
     isDark: boolean;
+    account: CommerceAccount | null;
     onSelectService: (id: string) => void;
 }
 
-export const StandardMenu: React.FC<StandardMenuProps> = ({ isDark, onSelectService }) => {
+export const StandardMenu: React.FC<StandardMenuProps> = ({ isDark, account, onSelectService }) => {
+    const sharedAllowance = standardAllowance(account, 'article');
     const services: ServiceItem[] = [
         {
             id: 'taqdimot',
@@ -112,8 +116,16 @@ export const StandardMenu: React.FC<StandardMenuProps> = ({ isDark, onSelectServ
                 </p>
             </div>
             
+            <div className={`rounded-xl border px-3 py-2.5 text-[11px] leading-relaxed ${isDark ? 'border-cyan-500/25 bg-cyan-950/20 text-slate-300' : 'border-cyan-200 bg-cyan-50 text-slate-600'}`} role="status">
+                <p className="font-bold">{sharedAllowance.ready ? `Jami bepul limit: ${sharedAllowance.freeRemaining}/3 ta qoldi` : 'Bepul limit tekshirilmoqda'}</p>
+                <p className="mt-1">Referat, maqola va obyektivka uchun bitta umumiy 3 talik limit. Tugagach, har bir buyurtma — 1 kvota.</p>
+            </div>
             <div className="grid grid-cols-2 gap-3 pb-4">
-                {services.map((service, idx) => (
+                {services.map((service, idx) => {
+                    const trialService = service.id === 'maqola' ? 'article' : service.id === 'obyektivka' ? 'obyektivka' : service.id === 'tezis' ? 'referat' : null;
+                    const allowance = trialService ? standardAllowance(account, trialService) : null;
+                    const price = allowance?.label ?? service.price;
+                    return (
                     <button
                         key={service.id}
                         onClick={() => onSelectService(service.id)}
@@ -135,13 +147,13 @@ export const StandardMenu: React.FC<StandardMenuProps> = ({ isDark, onSelectServ
                         </div>
 
                         {/* Price Badge */}
-                        {service.price && (
+                        {price && (
                             <span className={`absolute top-2 left-2 backdrop-blur-md text-[9px] font-extrabold px-2 py-0.5 rounded-md shadow-md z-10 ${
-                                service.price === 'BEPUL' 
+                                (allowance ? allowance.ready && allowance.requiredCredits === 0 : price === 'BEPUL')
                                     ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40' 
                                     : 'bg-slate-900/80 text-cyan-300 border border-cyan-400/40'
                             }`}>
-                                {service.price}
+                                {price}
                             </span>
                         )}
 
@@ -171,7 +183,8 @@ export const StandardMenu: React.FC<StandardMenuProps> = ({ isDark, onSelectServ
                             </p>
                         </div>
                     </button>
-                ))}
+                    );
+                })}
             </div>
             <style>{`
                 @keyframes dSlideUp {
